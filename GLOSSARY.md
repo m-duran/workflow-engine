@@ -59,3 +59,7 @@ _Avoid_: Poison message, dead letter queue
 **Unwind reason**:
 Why a run entered Compensating. Either a forward step exhausted its retries, or the client cancelled. It selects Failed or Cancelled when compensation finishes. It is not a run state.
 _Avoid_: Cause, error type
+
+**Idempotency key**:
+A client-supplied token, unique per workflow name, that identifies one start of that workflow for the life of the run row.
+_Avoid_: Dedup key, request id

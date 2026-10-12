@@ -29,10 +29,11 @@ Research findings live on throwaway branches named `research/<name>`, cut from `
 - [PostgreSQL claim and crash facts](issues/01-postgresql-claim-and-crash-facts.md): A lock claim vanishes with the session and leaves no in-flight trace; a committed column claim stays visible and stuck.
 - [Run lifecycle](issues/02-run-lifecycle.md): Eight run states. Cancel and retry exhaustion unwind through Compensating; a compensation that exhausts its retries dead-letters the run and stops the rest.
 - [Retry, timeout, and backoff](issues/03-retry-timeout-and-backoff.md): One policy shape for every step. Full-jitter exponential backoff. Inventory 3 attempts, payment 3, notification 5, payment compensation 5.
+- [Idempotency key contract](issues/04-idempotency-key-contract.md): A required client key, unique per workflow for the life of the run. Same input replays the original start. A different input conflicts.
 
 ## Not yet specified
 
-- What is stored for a run, an attempt, and an idempotency key. Depends on the lifecycle, the claim behavior, and the idempotency contract.
+- What is stored for a run, an attempt, and an idempotency key. The lifecycle and the idempotency contract are decided. This still depends on the claim behavior.
 - Correlation ids, structured log fields, and trace spans. Depends on the lifecycle and the HTTP API.
 - What the spec will require automated tests, the load test, and the failure-injection demo to show. The lifecycle and the retry policy are decided. This still depends on the HTTP API.
 
