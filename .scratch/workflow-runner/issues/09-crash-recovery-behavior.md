@@ -16,4 +16,6 @@ PostgreSQL 18, documented in [PostgreSQL claim and crash facts](../research/post
 
 The spec has to pick which failure it owns: reclaim the row with no record that an attempt was in flight, or persist a committed in-flight mark and define how a later session recognizes and releases that stuck claim.
 
+[Run lifecycle](02-run-lifecycle.md) closed the state list: **Accepted**, **Running**, **Waiting**, **Compensating**, **Succeeded**, **Cancelled**, **Failed**, **Dead-lettered**. Do not add a state. Say which of those states the new session observes, and whether the interrupted attempt is retried.
+
 ## Comments

@@ -24,10 +24,38 @@ _Avoid_: Rollback, undo, saga
 One invocation of a step on a run. A retry is another attempt. Invoking a compensation is an attempt.
 _Avoid_: Try, execution
 
+**Accepted**:
+A run state. The run is stored, and no attempt has started.
+_Avoid_: Queued, pending, created
+
+**Running**:
+A run state. A forward attempt is in flight.
+_Avoid_: In progress, active
+
+**Waiting**:
+A run state. A forward attempt has failed, and the backoff before the next attempt has not elapsed.
+_Avoid_: Delayed, scheduled, backoff
+
+**Compensating**:
+A run state. Completed steps are being compensated in reverse. This includes a compensation attempt in flight and the backoff before the next one.
+_Avoid_: Rolling back, undoing
+
+**Succeeded**:
+A run state. Every forward step completed.
+_Avoid_: Completed, done, successful
+
+**Cancelled**:
+A run state. The client cancelled the run, and every required compensation has finished.
+_Avoid_: Aborted, stopped
+
 **Failed**:
-The terminal state of a run whose retries are exhausted and whose required compensations have finished.
+A run state. A forward step exhausted its retries, and every required compensation has finished.
 _Avoid_: Error, crashed
 
 **Dead-lettered**:
-The terminal state of a run whose compensation exhausted its retries.
+A run state. A compensation exhausted its retries.
 _Avoid_: Poison message, dead letter queue
+
+**Unwind reason**:
+Why a run entered Compensating. Either a forward step exhausted its retries, or the client cancelled. It selects Failed or Cancelled when compensation finishes. It is not a run state.
+_Avoid_: Cause, error type

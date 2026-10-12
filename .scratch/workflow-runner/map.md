@@ -27,6 +27,7 @@ Research findings live on throwaway branches named `research/<name>`, cut from `
 ## Decisions so far
 
 - [PostgreSQL claim and crash facts](issues/01-postgresql-claim-and-crash-facts.md): A lock claim vanishes with the session and leaves no in-flight trace; a committed column claim stays visible and stuck.
+- [Run lifecycle](issues/02-run-lifecycle.md): Eight run states. Cancel and retry exhaustion unwind through Compensating; a compensation that exhausts its retries dead-letters the run and stops the rest.
 
 ## Not yet specified
 
