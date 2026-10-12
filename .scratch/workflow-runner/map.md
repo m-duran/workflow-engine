@@ -22,13 +22,14 @@ Standing preferences already settled with the user:
 - **Failed** means the run stopped cleanly. **Dead-lettered** means compensation did not finish. No automatic replay from the dead letter.
 - The spec requires a later implementation to produce a performance report and demo screenshots or a GIF. This map does not invent those.
 
-There is no git repository and no remote, so research findings are written as files under this effort. They are not a branch and they are not pushed.
+Research findings live on throwaway branches named `research/<name>`, cut from `main`, pushed, and never merged. [PostgreSQL claim and crash facts](issues/01-postgresql-claim-and-crash-facts.md) is on `research/postgresql-claim-and-crash-facts`.
 
 ## Decisions so far
 
+- [PostgreSQL claim and crash facts](issues/01-postgresql-claim-and-crash-facts.md): A lock claim vanishes with the session and leaves no in-flight trace; a committed column claim stays visible and stuck.
+
 ## Not yet specified
 
-- Which crash-recovery behavior the spec adopts for a step whose process dies mid-attempt. Depends on [PostgreSQL claim and crash facts](issues/01-postgresql-claim-and-crash-facts.md).
 - What is stored for a run, an attempt, and an idempotency key. Depends on the lifecycle, the claim behavior, and the idempotency contract.
 - Correlation ids, structured log fields, and trace spans. Depends on the lifecycle and the HTTP API.
 - What the spec will require automated tests, the load test, and the failure-injection demo to show. Depends on the lifecycle, the retry policy, and the HTTP API.
