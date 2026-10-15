@@ -31,6 +31,7 @@ Research findings live on throwaway branches named `research/<name>`, cut from `
 - [Retry, timeout, and backoff](issues/03-retry-timeout-and-backoff.md): One policy shape for every step. Full-jitter exponential backoff. Inventory 3 attempts, payment 3, notification 5, payment compensation 5.
 - [Idempotency key contract](issues/04-idempotency-key-contract.md): A required client key, unique per workflow for the life of the run. Same input replays the original start. A different input conflicts.
 - [Failure injection switch](issues/05-failure-injection-switch.md): Per-run targets on start, not part of the idempotency input. `fail` or `timeout` on every attempt until `maxAttempts`. Payment and its compensation are separate targets.
+- [Workflow registration shape](issues/06-workflow-registration-shape.md): Steps bind a name to a function and a policy. Workflow `order` orders the forward names and points `take-payment` at `payment-compensation`. Steps see the original input and earlier outputs.
 
 ## Not yet specified
 
