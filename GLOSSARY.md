@@ -63,3 +63,7 @@ _Avoid_: Cause, error type
 **Idempotency key**:
 A client-supplied token, unique per workflow name, that identifies one start of that workflow for the life of the run row.
 _Avoid_: Dedup key, request id
+
+**Failure injection**:
+A per-run instruction, set when the run starts, that forces a named fake step to fail or time out on every attempt until that step's attempts are exhausted.
+_Avoid_: Chaos switch, fault flag
