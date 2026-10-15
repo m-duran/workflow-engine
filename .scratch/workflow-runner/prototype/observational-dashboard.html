@@ -1,0 +1,385 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Prototype: observational dashboard</title>
+<!--
+  PROTOTYPE. Throwaway. Not a production route.
+  Three variants of the observational dashboard, switchable via ?variant=,
+  on a new page because the app has no dashboard route yet.
+  A Ledger — B Timeline — C Transcript
+-->
+<style>
+  :root { color-scheme: light; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 14px/1.4 system-ui, sans-serif; color: #1a1a1a; background: #f4f4f1; }
+  button, a { font: inherit; }
+  .switcher {
+    position: fixed; z-index: 10; left: 50%; bottom: 16px; transform: translateX(-50%);
+    display: flex; gap: 8px; align-items: center;
+    background: #111; color: #fff; border-radius: 999px; padding: 6px 8px;
+    box-shadow: 0 8px 24px rgba(0,0,0,.25);
+  }
+  .switcher button {
+    background: transparent; color: #fff; border: 0; width: 32px; height: 32px;
+    border-radius: 999px; cursor: pointer;
+  }
+  .switcher button:hover { background: #333; }
+  .switcher .label { min-width: 11rem; text-align: center; font-size: 13px; }
+  .page { padding: 20px 20px 72px; }
+  table { border-collapse: collapse; width: 100%; background: #fff; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid #ddd; vertical-align: top; }
+  th { font-size: 11px; letter-spacing: .04em; text-transform: uppercase; color: #555; }
+  tr.selected { background: #e7f0ff; }
+  tr.clickable { cursor: pointer; }
+  .mono { font-family: ui-monospace, monospace; font-size: 12px; }
+  .state { font-weight: 650; }
+  .dump { margin-top: 16px; }
+  .dump pre { background: #fff; border: 1px solid #ddd; padding: 12px; overflow: auto; font-size: 12px; }
+  .attempts { width: 100%; background: #fafafa; }
+  .attempts td { font-size: 12px; }
+
+  .timeline { display: grid; grid-template-columns: 220px 1fr; gap: 20px; align-items: start; }
+  .rail { display: flex; flex-direction: column; gap: 4px; }
+  .rail button {
+    text-align: left; border: 0; background: transparent; padding: 8px;
+    cursor: pointer; border-left: 3px solid transparent;
+  }
+  .rail button[aria-current="true"] { border-left-color: #111; background: #fff; }
+  .story h1 { font-size: 22px; margin: 0 0 8px; }
+  .meta { color: #444; margin-bottom: 20px; }
+  .beat { display: grid; grid-template-columns: 16px 1fr; gap: 12px; }
+  .beat i { width: 10px; height: 10px; border-radius: 50%; background: #111; display: block; margin-top: 4px; }
+  .beat + .beat { margin-top: 14px; }
+  .beat p { margin: 0; }
+
+  .transcript { display: grid; grid-template-columns: 1fr 180px; gap: 24px; }
+  .log { font-family: ui-monospace, monospace; font-size: 13px; white-space: pre-wrap; }
+  .log h2 { font: 600 13px ui-monospace, monospace; margin: 22px 0 6px; }
+  .index { position: sticky; top: 12px; display: flex; flex-direction: column; gap: 6px; }
+  .index a { color: inherit; text-decoration: none; }
+  .index a[aria-current="true"] { font-weight: 700; }
+</style>
+</head>
+<body>
+<div class="page" id="page"></div>
+<div class="switcher">
+  <button type="button" id="prev" aria-label="Previous variant">←</button>
+  <div class="label" id="label"></div>
+  <button type="button" id="next" aria-label="Next variant">→</button>
+</div>
+<script>
+const VARIANTS = [
+  { key: "A", name: "Ledger" },
+  { key: "B", name: "Timeline" },
+  { key: "C", name: "Transcript" }
+];
+
+const runs = [
+  {
+    id: "a1c0e4b2-7d11-4a6e-9c31-0e5b8f2a1d44",
+    workflow: "order",
+    input: { sku: "NB-1", qty: 1 },
+    state: "Accepted",
+    cancelRequested: false,
+    unwindReason: null,
+    failureInjection: [],
+    createdAt: "2026-10-15T21:58:00Z",
+    attempts: []
+  },
+  {
+    id: "b2d1f5c3-8e22-4b7f-0d42-1f6c9a3b2e55",
+    workflow: "order",
+    input: { sku: "NB-1", qty: 2 },
+    state: "Running",
+    cancelRequested: false,
+    unwindReason: null,
+    failureInjection: [],
+    createdAt: "2026-10-15T21:50:00Z",
+    attempts: [
+      attempt("validate-inventory", 1, "in-flight", "2026-10-15T21:50:01Z", null)
+    ]
+  },
+  {
+    id: "c3e206d4-9f33-4c80-1e53-2a7d0b4c3f66",
+    workflow: "order",
+    input: { sku: "MX-9", qty: 1 },
+    state: "Running",
+    cancelRequested: true,
+    unwindReason: null,
+    failureInjection: [],
+    createdAt: "2026-10-15T21:40:00Z",
+    attempts: [
+      attempt("validate-inventory", 1, "succeeded", "2026-10-15T21:40:01Z", "2026-10-15T21:40:02Z"),
+      attempt("take-payment", 1, "in-flight", "2026-10-15T21:40:02Z", null)
+    ]
+  },
+  {
+    id: "d4f317e5-0a44-4d91-2f64-3b8e1c5d4077",
+    workflow: "order",
+    input: { sku: "MX-9", qty: 1 },
+    state: "Waiting",
+    cancelRequested: false,
+    unwindReason: null,
+    failureInjection: [{ step: "send-notification", mode: "fail" }],
+    createdAt: "2026-10-15T21:30:00Z",
+    attempts: [
+      attempt("validate-inventory", 1, "succeeded", "2026-10-15T21:30:01Z", "2026-10-15T21:30:01Z"),
+      attempt("take-payment", 1, "succeeded", "2026-10-15T21:30:02Z", "2026-10-15T21:30:03Z"),
+      attempt("send-notification", 1, "failed", "2026-10-15T21:30:03Z", "2026-10-15T21:30:03Z")
+    ]
+  },
+  {
+    id: "e50428f6-1b55-4ea2-3075-4c9f2d6e5188",
+    workflow: "order",
+    input: { sku: "KB-2", qty: 1 },
+    state: "Compensating",
+    cancelRequested: false,
+    unwindReason: "retries-exhausted",
+    failureInjection: [{ step: "send-notification", mode: "fail" }],
+    createdAt: "2026-10-15T21:10:00Z",
+    attempts: [
+      attempt("validate-inventory", 1, "succeeded", "2026-10-15T21:10:01Z", "2026-10-15T21:10:01Z"),
+      attempt("take-payment", 1, "succeeded", "2026-10-15T21:10:02Z", "2026-10-15T21:10:03Z"),
+      attempt("send-notification", 1, "failed", "2026-10-15T21:10:04Z", "2026-10-15T21:10:04Z"),
+      attempt("send-notification", 2, "failed", "2026-10-15T21:10:05Z", "2026-10-15T21:10:05Z"),
+      attempt("send-notification", 3, "failed", "2026-10-15T21:10:07Z", "2026-10-15T21:10:07Z"),
+      attempt("send-notification", 4, "failed", "2026-10-15T21:10:11Z", "2026-10-15T21:10:11Z"),
+      attempt("send-notification", 5, "failed", "2026-10-15T21:10:19Z", "2026-10-15T21:10:19Z"),
+      attempt("payment-compensation", 1, "in-flight", "2026-10-15T21:10:19Z", null)
+    ]
+  },
+  {
+    id: "f61539a7-2c66-4fb3-4186-5d0a3e7f6299",
+    workflow: "order",
+    input: { sku: "NB-1", qty: 1 },
+    state: "Succeeded",
+    cancelRequested: false,
+    unwindReason: null,
+    failureInjection: [],
+    createdAt: "2026-10-15T20:00:00Z",
+    attempts: [
+      attempt("validate-inventory", 1, "succeeded", "2026-10-15T20:00:01Z", "2026-10-15T20:00:01Z"),
+      attempt("take-payment", 1, "succeeded", "2026-10-15T20:00:02Z", "2026-10-15T20:00:03Z"),
+      attempt("send-notification", 1, "succeeded", "2026-10-15T20:00:03Z", "2026-10-15T20:00:04Z")
+    ]
+  },
+  {
+    id: "07164ab8-3d77-40c4-5297-6e1b4f8070aa",
+    workflow: "order",
+    input: { sku: "PH-4", qty: 1 },
+    state: "Cancelled",
+    cancelRequested: false,
+    unwindReason: "cancelled",
+    failureInjection: [],
+    createdAt: "2026-10-15T19:00:00Z",
+    attempts: [
+      attempt("validate-inventory", 1, "succeeded", "2026-10-15T19:00:01Z", "2026-10-15T19:00:01Z"),
+      attempt("take-payment", 1, "succeeded", "2026-10-15T19:00:02Z", "2026-10-15T19:00:03Z"),
+      attempt("payment-compensation", 1, "succeeded", "2026-10-15T19:00:04Z", "2026-10-15T19:00:05Z")
+    ]
+  },
+  {
+    id: "18275bc9-4e88-41d5-63a8-7f2c508191bb",
+    workflow: "order",
+    input: { sku: "ZZ-0", qty: 3 },
+    state: "Failed",
+    cancelRequested: false,
+    unwindReason: null,
+    failureInjection: [{ step: "validate-inventory", mode: "timeout" }],
+    createdAt: "2026-10-15T18:00:00Z",
+    attempts: [
+      attempt("validate-inventory", 1, "timed-out", "2026-10-15T18:00:01Z", "2026-10-15T18:00:02Z"),
+      attempt("validate-inventory", 2, "timed-out", "2026-10-15T18:00:03Z", "2026-10-15T18:00:04Z"),
+      attempt("validate-inventory", 3, "timed-out", "2026-10-15T18:00:05Z", "2026-10-15T18:00:06Z")
+    ]
+  },
+  {
+    id: "29386cd0-5f99-42e6-74b9-803d6192a2cc",
+    workflow: "order",
+    input: { sku: "KB-2", qty: 1 },
+    state: "Dead-lettered",
+    cancelRequested: false,
+    unwindReason: "retries-exhausted",
+    failureInjection: [
+      { step: "send-notification", mode: "fail" },
+      { step: "payment-compensation", mode: "fail" }
+    ],
+    createdAt: "2026-10-15T17:00:00Z",
+    attempts: [
+      attempt("validate-inventory", 1, "succeeded", "2026-10-15T17:00:01Z", "2026-10-15T17:00:01Z"),
+      attempt("take-payment", 1, "succeeded", "2026-10-15T17:00:02Z", "2026-10-15T17:00:03Z"),
+      attempt("send-notification", 1, "failed", "2026-10-15T17:00:04Z", "2026-10-15T17:00:04Z"),
+      attempt("send-notification", 2, "failed", "2026-10-15T17:00:05Z", "2026-10-15T17:00:05Z"),
+      attempt("send-notification", 3, "failed", "2026-10-15T17:00:07Z", "2026-10-15T17:00:07Z"),
+      attempt("send-notification", 4, "failed", "2026-10-15T17:00:11Z", "2026-10-15T17:00:11Z"),
+      attempt("send-notification", 5, "failed", "2026-10-15T17:00:19Z", "2026-10-15T17:00:19Z"),
+      attempt("payment-compensation", 1, "failed", "2026-10-15T17:00:20Z", "2026-10-15T17:00:20Z"),
+      attempt("payment-compensation", 2, "failed", "2026-10-15T17:00:21Z", "2026-10-15T17:00:21Z"),
+      attempt("payment-compensation", 3, "failed", "2026-10-15T17:00:23Z", "2026-10-15T17:00:23Z"),
+      attempt("payment-compensation", 4, "timed-out", "2026-10-15T17:00:27Z", "2026-10-15T17:00:30Z"),
+      attempt("payment-compensation", 5, "failed", "2026-10-15T17:00:35Z", "2026-10-15T17:00:35Z")
+    ]
+  }
+];
+
+function attempt(step, n, outcome, startedAt, finishedAt) {
+  return { step, attempt: n, outcome, startedAt, finishedAt };
+}
+
+let selectedId = runs[2].id;
+
+function variantKey() {
+  const key = new URLSearchParams(location.search).get("variant") || "A";
+  return VARIANTS.some((v) => v.key === key) ? key : "A";
+}
+
+function setVariant(key) {
+  const url = new URL(location.href);
+  url.searchParams.set("variant", key);
+  history.replaceState(null, "", url);
+  render();
+}
+
+function cycle(step) {
+  const index = VARIANTS.findIndex((v) => v.key === variantKey());
+  const next = (index + step + VARIANTS.length) % VARIANTS.length;
+  setVariant(VARIANTS[next].key);
+}
+
+function selected() {
+  return runs.find((run) => run.id === selectedId) || runs[0];
+}
+
+function listItem(run) {
+  const { attempts, ...rest } = run;
+  return rest;
+}
+
+function detail(run) {
+  return run;
+}
+
+function shortId(id) {
+  return id.slice(0, 8);
+}
+
+function flags(run) {
+  const parts = [];
+  if (run.cancelRequested) parts.push("cancel requested");
+  if (run.unwindReason) parts.push(run.unwindReason);
+  if (run.failureInjection.length) {
+    parts.push(run.failureInjection.map((item) => item.step + " " + item.mode).join(", "));
+  }
+  return parts.join(" · ") || "—";
+}
+
+function attemptRows(run) {
+  if (!run.attempts.length) return "<tr><td colspan='5'>No attempts</td></tr>";
+  return run.attempts.map((item) =>
+    `<tr><td>${item.step}</td><td>${item.attempt}</td><td>${item.outcome}</td><td class="mono">${item.startedAt}</td><td class="mono">${item.finishedAt ?? ""}</td></tr>`
+  ).join("");
+}
+
+function dump(run) {
+  return `<details class="dump" open><summary>GET /runs/${run.id}</summary><pre>${JSON.stringify(detail(run), null, 2)}</pre></details>`;
+}
+
+function renderLedger() {
+  const run = selected();
+  const rows = runs.map((item) => `
+    <tr class="clickable ${item.id === run.id ? "selected" : ""}" data-id="${item.id}">
+      <td class="state">${item.state}</td>
+      <td class="mono">${shortId(item.id)}</td>
+      <td class="mono">${item.createdAt}</td>
+      <td>${item.cancelRequested ? "yes" : ""}</td>
+      <td>${item.unwindReason ?? ""}</td>
+      <td>${item.failureInjection.map((f) => f.step + ":" + f.mode).join(", ")}</td>
+    </tr>
+    ${item.id === run.id ? `<tr><td colspan="6"><table class="attempts"><thead><tr><th>Step</th><th>Attempt</th><th>Outcome</th><th>Started</th><th>Finished</th></tr></thead><tbody>${attemptRows(item)}</tbody></table></td></tr>` : ""}
+  `).join("");
+  return `
+    <table>
+      <thead><tr><th>State</th><th>Run</th><th>Created</th><th>Cancel requested</th><th>Unwind reason</th><th>Failure injection</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+    ${dump(run)}
+  `;
+}
+
+function renderTimeline() {
+  const run = selected();
+  const rail = runs.map((item) =>
+    `<button type="button" data-id="${item.id}" ${item.id === run.id ? 'aria-current="true"' : ""}>${item.state}<br><span class="mono">${shortId(item.id)}</span></button>`
+  ).join("");
+  const beats = run.attempts.length
+    ? run.attempts.map((item) => `<div class="beat"><i></i><p><strong>${item.step}</strong> attempt ${item.attempt} · ${item.outcome}<br><span class="mono">${item.startedAt}${item.finishedAt ? " → " + item.finishedAt : ""}</span></p></div>`).join("")
+    : `<p>No attempts yet.</p>`;
+  return `
+    <div class="timeline">
+      <nav class="rail">${rail}</nav>
+      <article class="story">
+        <h1>${run.state}</h1>
+        <p class="meta mono">${run.id}<br>${flags(run)}<br>input ${JSON.stringify(run.input)}</p>
+        ${beats}
+        ${dump(run)}
+      </article>
+    </div>
+  `;
+}
+
+function renderTranscript() {
+  const run = selected();
+  const log = runs.map((item) => {
+    const lines = [
+      `state ${item.state}`,
+      `cancelRequested ${item.cancelRequested}`,
+      `unwindReason ${item.unwindReason}`,
+      `failureInjection ${JSON.stringify(item.failureInjection)}`,
+      `input ${JSON.stringify(item.input)}`,
+      ...item.attempts.map((a) => `${a.startedAt}  ${a.step}  #${a.attempt}  ${a.outcome}${a.finishedAt ? "  finished " + a.finishedAt : ""}`)
+    ];
+    if (!item.attempts.length) lines.push("(no attempts)");
+    return `<h2 id="run-${item.id}">${shortId(item.id)}  ${item.workflow}</h2><div>${lines.join("\n")}</div>`;
+  }).join("\n");
+  const index = runs.map((item) =>
+    `<a href="#run-${item.id}" data-id="${item.id}" ${item.id === run.id ? 'aria-current="true"' : ""}>${item.state} ${shortId(item.id)}</a>`
+  ).join("");
+  return `
+    <div class="transcript">
+      <div class="log">${log}</div>
+      <nav class="index">${index}</nav>
+    </div>
+    ${dump(run)}
+  `;
+}
+
+function render() {
+  const current = VARIANTS.find((v) => v.key === variantKey());
+  document.getElementById("label").textContent = `${current.key} (${current.name})`;
+  const page = document.getElementById("page");
+  if (current.key === "A") page.innerHTML = renderLedger();
+  else if (current.key === "B") page.innerHTML = renderTimeline();
+  else page.innerHTML = renderTranscript();
+}
+
+document.getElementById("page").addEventListener("click", (event) => {
+  const target = event.target.closest("[data-id]");
+  if (!target) return;
+  selectedId = target.dataset.id;
+  render();
+});
+
+document.getElementById("prev").addEventListener("click", () => cycle(-1));
+document.getElementById("next").addEventListener("click", () => cycle(1));
+document.addEventListener("keydown", (event) => {
+  const tag = document.activeElement && document.activeElement.tagName;
+  if (tag === "INPUT" || tag === "TEXTAREA" || (document.activeElement && document.activeElement.isContentEditable)) return;
+  if (event.key === "ArrowLeft") cycle(-1);
+  if (event.key === "ArrowRight") cycle(1);
+});
+
+render();
+</script>
+</body>
+</html>
