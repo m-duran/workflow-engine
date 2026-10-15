@@ -60,6 +60,10 @@ _Avoid_: Poison message, dead letter queue
 Why a run entered Compensating. Either a forward step exhausted its retries, or the client cancelled. It selects Failed or Cancelled when compensation finishes. It is not a run state.
 _Avoid_: Cause, error type
 
+**Cancel requested**:
+A flag on a run, not a state. True after cancel is accepted and an in-flight attempt has not yet finished.
+_Avoid_: Cancelling
+
 **Idempotency key**:
 A client-supplied token, unique per workflow name, that identifies one start of that workflow for the life of the run row.
 _Avoid_: Dedup key, request id

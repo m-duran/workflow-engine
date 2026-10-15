@@ -32,12 +32,12 @@ Research findings live on throwaway branches named `research/<name>`, cut from `
 - [Idempotency key contract](issues/04-idempotency-key-contract.md): A required client key, unique per workflow for the life of the run. Same input replays the original start. A different input conflicts.
 - [Failure injection switch](issues/05-failure-injection-switch.md): Per-run targets on start, not part of the idempotency input. `fail` or `timeout` on every attempt until `maxAttempts`. Payment and its compensation are separate targets.
 - [Workflow registration shape](issues/06-workflow-registration-shape.md): Steps bind a name to a function and a policy. Workflow `order` orders the forward names and points `take-payment` at `payment-compensation`. Steps see the original input and earlier outputs.
+- [Run HTTP API](issues/07-run-http-api.md): Four routes. `201` creates and replays a start. `409` is an idempotency conflict or a rejected cancel. The run body carries state, cancel requested, unwind reason, and attempts.
+- [Observational dashboard](issues/08-observational-dashboard.md): A rail of runs by state, and one selected run's attempts in order. Ledger and transcript were not chosen.
 
 ## Not yet specified
 
-- What is stored for a run, an attempt, and an idempotency key. The lifecycle and the idempotency contract are decided. This still depends on the claim behavior.
-- Correlation ids, structured log fields, and trace spans. Depends on the lifecycle and the HTTP API.
-- What the spec will require automated tests, the load test, and the failure-injection demo to show. The lifecycle and the retry policy are decided. This still depends on the HTTP API.
+- What is stored for a run, an attempt, and an idempotency key. The lifecycle, the idempotency contract, and the run body are decided. This still depends on the claim behavior.
 
 ## Out of scope
 
