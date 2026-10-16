@@ -1,7 +1,7 @@
 # Correlation and traces
 
 Type: grilling
-Status: open
+Status: claimed
 Blocked by:
 
 ## Question

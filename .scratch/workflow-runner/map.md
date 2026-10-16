@@ -34,10 +34,10 @@ Research findings live on throwaway branches named `research/<name>`, cut from `
 - [Workflow registration shape](issues/06-workflow-registration-shape.md): Steps bind a name to a function and a policy. Workflow `order` orders the forward names and points `take-payment` at `payment-compensation`. Steps see the original input and earlier outputs.
 - [Run HTTP API](issues/07-run-http-api.md): Four routes. `201` creates and replays a start. `409` is an idempotency conflict or a rejected cancel. The run body carries state, cancel requested, unwind reason, and attempts.
 - [Observational dashboard](issues/08-observational-dashboard.md): A rail of runs by state, and one selected run's attempts in order. Ledger and transcript were not chosen.
+- [Crash recovery behavior](issues/09-crash-recovery-behavior.md): Startup closes a committed `in-flight` attempt as `failed` and continues in the existing states. Backoff starts at recovery time.
 
 ## Not yet specified
 
-- What is stored for a run, an attempt, and an idempotency key. The lifecycle, the idempotency contract, and the run body are decided. This still depends on the claim behavior.
 
 ## Out of scope
 
