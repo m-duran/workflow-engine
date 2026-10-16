@@ -1,7 +1,7 @@
 # Physical run storage
 
 Type: grilling
-Status: open
+Status: claimed
 Blocked by:
 
 ## Question
