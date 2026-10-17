@@ -90,11 +90,9 @@ A good test drives the process from the outside. It uses `POST /runs`, `POST /ru
 
 There is no existing test suite to copy. This HTTP restart is the only seam.
 
-Hold an attempt open with **Failure injection** mode `timeout` on the step under test. Kill the process while `GET` shows that attempt `in-flight`, and kill inside the step timeout so the living process does not record `timed-out` first. `take-payment` and `payment-compensation` give the longest hold, 3 seconds. Assert the recovered outcome is `failed`.
+The required crash test is one case. Hold `take-payment` with **Failure injection** mode `timeout`. Kill the process while `GET` shows that attempt `in-flight`, inside the 3 second timeout, so the living process does not record `timed-out`. After restart, that attempt is `failed` and counts toward `maxAttempts`.
 
-Cover a forward crash with attempts left, a forward crash that exhausts a step with no compensation, a forward crash that exhausts `take-payment` after `validate-inventory` succeeded, a compensation crash with attempts left, a compensation crash that dead-letters the run, cancel accepted during a forward `in-flight` attempt, a death during **Waiting**, and a restart of an **Accepted** run that has no attempt. Assert the handoff by injecting `timeout` on a later step and reading both the earlier `succeeded` attempt and the later `in-flight` attempt on one GET. Do not race the uncommitted window between a function returning and its commit; that window is still `in-flight` and is the same recovery.
-
-Full jitter includes a delay of zero, so a test does not require a minimum wait. It asserts **Waiting** or **Compensating**, the closed attempt, and that a later attempt of that step uses the next number. It does not assert an exact delay.
+The suite does not have to catch **Waiting**, and it does not assert a backoff delay. Full jitter includes zero. A non-final failure is followed by the next attempt number. Other crash paths stay specified behavior. The suite is not required to perform them. The full suite list is [Tests and load evidence](../tests-and-load-evidence/spec.md).
 
 ## Out of Scope
 

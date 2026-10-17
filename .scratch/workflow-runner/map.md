@@ -35,6 +35,9 @@ Research findings live on throwaway branches named `research/<name>`, cut from `
 - [Run HTTP API](issues/07-run-http-api.md): Four routes. `201` creates and replays a start. `409` is an idempotency conflict or a rejected cancel. The run body carries state, cancel requested, unwind reason, and attempts.
 - [Observational dashboard](issues/08-observational-dashboard.md): A rail of runs by state, and one selected run's attempts in order. Ledger and transcript were not chosen.
 - [Crash recovery behavior](issues/09-crash-recovery-behavior.md): Startup closes a committed `in-flight` attempt as `failed` and continues in the existing states. Backoff starts at recovery time.
+- [Correlation and traces](issues/10-correlation-and-traces.md): The run id is the correlation id. Request, attempt, and recover spans, plus info logs. No sampling and no named exporter.
+- [Tests and load evidence](issues/11-tests-and-load-evidence.md): HTTP proof only. A fixed suite, one take-payment crash, a separate load command with no target, and one notification-failure demo.
+- [Physical run storage](issues/12-physical-run-storage.md): `runs` and `attempts`, `not_before` for backoff, four indexes, and canonical jsonb input.
 
 ## Not yet specified
 
