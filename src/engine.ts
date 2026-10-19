@@ -1,12 +1,19 @@
-import type { Pool } from "pg";
-import { orderWorkflow, steps, type StepContext } from "./order";
+import type { Pool, PoolClient } from "pg";
+import { orderWorkflow, steps, type StepContext, type StepPolicy } from "./order";
+
+type Injection = { step: string; mode: "fail" | "timeout" };
 
 type OpenAttempt = {
   runId: string;
   step: string;
   attempt: number;
   ctx: StepContext;
+  injection: Injection[];
 };
+
+type AttemptResult =
+  | { outcome: "succeeded"; output: unknown }
+  | { outcome: "failed" | "timed-out" };
 
 export type Worker = {
   stop: () => Promise<void>;
@@ -48,29 +55,47 @@ export function startWorker(pool: Pool): Worker {
 }
 
 async function driveOneRun(pool: Pool): Promise<boolean> {
-  let current = await claimAccepted(pool);
+  let current = await claimWork(pool);
   if (!current) return false;
 
   while (current) {
-    const definition = steps[current.step];
-    if (!definition) {
-      throw new Error(`no step registered for ${current.step}`);
-    }
-    const output = await definition.run(current.ctx);
-    current = await recordSuccess(pool, current, output);
+    const result = await invoke(current);
+    current = await recordOutcome(pool, current, result);
   }
   return true;
 }
 
-async function claimAccepted(pool: Pool): Promise<OpenAttempt | null> {
+async function invoke(current: OpenAttempt): Promise<AttemptResult> {
+  const definition = steps[current.step];
+  if (!definition) throw new Error(`no step registered for ${current.step}`);
+  const injected = current.injection.find((entry) => entry.step === current.step);
+  if (injected?.mode === "fail") return { outcome: "failed" };
+  if (injected?.mode === "timeout") {
+    await delay(definition.policy.timeoutMs);
+    return { outcome: "timed-out" };
+  }
+  const output = await definition.run(current.ctx);
+  return { outcome: "succeeded", output };
+}
+
+async function claimWork(pool: Pool): Promise<OpenAttempt | null> {
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
-    const found = await client.query<{ id: string; input: unknown }>(
-      `SELECT id, input
+    const found = await client.query<{
+      id: string;
+      input: unknown;
+      state: string;
+      failure_injection: Injection[];
+    }>(
+      `SELECT id, input, state, failure_injection
        FROM runs
-       WHERE state = 'Accepted'
+       WHERE state IN ('Accepted', 'Waiting')
          AND (not_before IS NULL OR not_before <= clock_timestamp())
+         AND NOT EXISTS (
+           SELECT 1 FROM attempts
+           WHERE attempts.run_id = runs.id AND attempts.outcome = 'in-flight'
+         )
        ORDER BY created_at
        LIMIT 1
        FOR UPDATE`,
@@ -81,20 +106,23 @@ async function claimAccepted(pool: Pool): Promise<OpenAttempt | null> {
       return null;
     }
 
-    const step = orderWorkflow.forward[0];
-    if (!step) throw new Error("order workflow has no forward steps");
-    await client.query(`UPDATE runs SET state = 'Running' WHERE id = $1`, [run.id]);
+    const next = await nextForwardAttempt(client, run.id, run.state);
+    await client.query(
+      `UPDATE runs SET state = 'Running', not_before = NULL WHERE id = $1`,
+      [run.id],
+    );
     await client.query(
       `INSERT INTO attempts (run_id, step, attempt, outcome, started_at, finished_at)
-       VALUES ($1, $2, 1, 'in-flight', clock_timestamp(), NULL)`,
-      [run.id, step],
+       VALUES ($1, $2, $3, 'in-flight', clock_timestamp(), NULL)`,
+      [run.id, next.step, next.attempt],
     );
     await client.query("COMMIT");
     return {
       runId: run.id,
-      step,
-      attempt: 1,
+      step: next.step,
+      attempt: next.attempt,
       ctx: { input: run.input, outputs: {} },
+      injection: run.failure_injection,
     };
   } catch (error) {
     await client.query("ROLLBACK");
@@ -104,53 +132,134 @@ async function claimAccepted(pool: Pool): Promise<OpenAttempt | null> {
   }
 }
 
-async function recordSuccess(
+async function nextForwardAttempt(
+  client: PoolClient,
+  runId: string,
+  state: string,
+): Promise<{ step: string; attempt: number }> {
+  if (state === "Accepted") {
+    const step = orderWorkflow.forward[0];
+    if (!step) throw new Error("order workflow has no forward steps");
+    return { step, attempt: 1 };
+  }
+
+  const stored = await client.query<{ step: string; attempt: number; outcome: string }>(
+    `SELECT step, attempt, outcome FROM attempts WHERE run_id = $1`,
+    [runId],
+  );
+  for (const step of orderWorkflow.forward) {
+    const rows = stored.rows.filter((row) => row.step === step);
+    if (rows.some((row) => row.outcome === "succeeded")) continue;
+    const latest = rows.reduce((max, row) => Math.max(max, row.attempt), 0);
+    if (latest === 0) break;
+    return { step, attempt: latest + 1 };
+  }
+  throw new Error(`waiting run ${runId} has no step to retry`);
+}
+
+async function recordOutcome(
   pool: Pool,
   current: OpenAttempt,
-  output: unknown,
+  result: AttemptResult,
 ): Promise<OpenAttempt | null> {
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
-    await client.query(
-      `UPDATE attempts
-       SET outcome = 'succeeded', finished_at = clock_timestamp()
-       WHERE run_id = $1 AND step = $2 AND attempt = $3 AND outcome = 'in-flight'`,
-      [current.runId, current.step, current.attempt],
-    );
-
-    const position = orderWorkflow.forward.indexOf(current.step);
-    const next = orderWorkflow.forward[position + 1];
-    if (!next) {
-      await client.query(
-        `UPDATE runs SET state = 'Succeeded', not_before = NULL WHERE id = $1`,
-        [current.runId],
-      );
-      await client.query("COMMIT");
-      return null;
-    }
-
-    await client.query(
-      `INSERT INTO attempts (run_id, step, attempt, outcome, started_at, finished_at)
-       VALUES ($1, $2, 1, 'in-flight', clock_timestamp(), NULL)`,
-      [current.runId, next],
-    );
+    const next =
+      result.outcome === "succeeded"
+        ? await recordSuccess(client, current, result.output)
+        : await recordFailure(client, current, result.outcome);
     await client.query("COMMIT");
-    return {
-      runId: current.runId,
-      step: next,
-      attempt: 1,
-      ctx: {
-        input: current.ctx.input,
-        outputs: { ...current.ctx.outputs, [current.step]: output },
-      },
-    };
+    return next;
   } catch (error) {
     await client.query("ROLLBACK");
     throw error;
   } finally {
     client.release();
   }
+}
+
+async function recordSuccess(
+  client: PoolClient,
+  current: OpenAttempt,
+  output: unknown,
+): Promise<OpenAttempt | null> {
+  await client.query(
+    `UPDATE attempts
+     SET outcome = 'succeeded', finished_at = clock_timestamp()
+     WHERE run_id = $1 AND step = $2 AND attempt = $3 AND outcome = 'in-flight'`,
+    [current.runId, current.step, current.attempt],
+  );
+
+  const position = orderWorkflow.forward.indexOf(current.step);
+  const next = orderWorkflow.forward[position + 1];
+  if (!next) {
+    await client.query(
+      `UPDATE runs SET state = 'Succeeded', not_before = NULL WHERE id = $1`,
+      [current.runId],
+    );
+    return null;
+  }
+
+  await client.query(
+    `INSERT INTO attempts (run_id, step, attempt, outcome, started_at, finished_at)
+     VALUES ($1, $2, 1, 'in-flight', clock_timestamp(), NULL)`,
+    [current.runId, next],
+  );
+  return {
+    runId: current.runId,
+    step: next,
+    attempt: 1,
+    ctx: {
+      input: current.ctx.input,
+      outputs: { ...current.ctx.outputs, [current.step]: output },
+    },
+    injection: current.injection,
+  };
+}
+
+async function recordFailure(
+  client: PoolClient,
+  current: OpenAttempt,
+  outcome: "failed" | "timed-out",
+): Promise<null> {
+  await client.query(
+    `UPDATE attempts
+     SET outcome = $4, finished_at = clock_timestamp()
+     WHERE run_id = $1 AND step = $2 AND attempt = $3 AND outcome = 'in-flight'`,
+    [current.runId, current.step, current.attempt, outcome],
+  );
+
+  const policy = steps[current.step]?.policy;
+  if (!policy) throw new Error(`no step registered for ${current.step}`);
+  if (current.attempt < policy.maxAttempts) {
+    const waitMs = fullJitterMs(policy, current.attempt);
+    await client.query(
+      `UPDATE runs
+       SET state = 'Waiting',
+           not_before = (
+             SELECT finished_at FROM attempts
+             WHERE run_id = $1 AND step = $2 AND attempt = $3
+           ) + ($4 * INTERVAL '1 millisecond')
+       WHERE id = $1`,
+      [current.runId, current.step, current.attempt, waitMs],
+    );
+    return null;
+  }
+
+  await client.query(
+    `UPDATE runs SET state = 'Failed', not_before = NULL WHERE id = $1`,
+    [current.runId],
+  );
+  return null;
+}
+
+function fullJitterMs(policy: StepPolicy, attempt: number): number {
+  const ceiling = Math.min(
+    policy.maxDelayMs,
+    policy.baseDelayMs * 2 ** (attempt - 1),
+  );
+  return Math.floor(Math.random() * (ceiling + 1));
 }
 
 function delay(ms: number): Promise<void> {
