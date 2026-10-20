@@ -90,7 +90,7 @@ async function claimWork(pool: Pool): Promise<OpenAttempt | null> {
     }>(
       `SELECT id, input, state, failure_injection
        FROM runs
-       WHERE state IN ('Accepted', 'Waiting')
+       WHERE state IN ('Accepted', 'Waiting', 'Compensating')
          AND (not_before IS NULL OR not_before <= clock_timestamp())
          AND NOT EXISTS (
            SELECT 1 FROM attempts
@@ -106,10 +106,13 @@ async function claimWork(pool: Pool): Promise<OpenAttempt | null> {
       return null;
     }
 
-    const next = await nextForwardAttempt(client, run.id, run.state);
+    const next =
+      run.state === "Compensating"
+        ? await nextCompensationAttempt(client, run.id)
+        : await nextForwardAttempt(client, run.id, run.state);
     await client.query(
-      `UPDATE runs SET state = 'Running', not_before = NULL WHERE id = $1`,
-      [run.id],
+      `UPDATE runs SET state = $2, not_before = NULL WHERE id = $1`,
+      [run.id, run.state === "Compensating" ? "Compensating" : "Running"],
     );
     await client.query(
       `INSERT INTO attempts (run_id, step, attempt, outcome, started_at, finished_at)
@@ -157,6 +160,24 @@ async function nextForwardAttempt(
   throw new Error(`waiting run ${runId} has no step to retry`);
 }
 
+async function nextCompensationAttempt(
+  client: PoolClient,
+  runId: string,
+): Promise<{ step: string; attempt: number }> {
+  const stored = await client.query<{ step: string; attempt: number; outcome: string }>(
+    `SELECT step, attempt, outcome FROM attempts WHERE run_id = $1`,
+    [runId],
+  );
+  for (const step of Object.values(orderWorkflow.compensations)) {
+    const rows = stored.rows.filter((row) => row.step === step);
+    if (rows.some((row) => row.outcome === "succeeded")) continue;
+    const latest = rows.reduce((max, row) => Math.max(max, row.attempt), 0);
+    if (latest === 0) continue;
+    return { step, attempt: latest + 1 };
+  }
+  throw new Error(`compensating run ${runId} has no step to retry`);
+}
+
 async function recordOutcome(
   pool: Pool,
   current: OpenAttempt,
@@ -191,6 +212,10 @@ async function recordSuccess(
     [current.runId, current.step, current.attempt],
   );
 
+  if (isCompensation(current.step)) {
+    return finishCompensation(client, current);
+  }
+
   const position = orderWorkflow.forward.indexOf(current.step);
   const next = orderWorkflow.forward[position + 1];
   if (!next) {
@@ -222,7 +247,7 @@ async function recordFailure(
   client: PoolClient,
   current: OpenAttempt,
   outcome: "failed" | "timed-out",
-): Promise<null> {
+): Promise<OpenAttempt | null> {
   await client.query(
     `UPDATE attempts
      SET outcome = $4, finished_at = clock_timestamp()
@@ -234,24 +259,111 @@ async function recordFailure(
   if (!policy) throw new Error(`no step registered for ${current.step}`);
   if (current.attempt < policy.maxAttempts) {
     const waitMs = fullJitterMs(policy, current.attempt);
+    const state = isCompensation(current.step) ? "Compensating" : "Waiting";
     await client.query(
       `UPDATE runs
-       SET state = 'Waiting',
+       SET state = $5,
            not_before = (
              SELECT finished_at FROM attempts
              WHERE run_id = $1 AND step = $2 AND attempt = $3
            ) + ($4 * INTERVAL '1 millisecond')
        WHERE id = $1`,
-      [current.runId, current.step, current.attempt, waitMs],
+      [current.runId, current.step, current.attempt, waitMs, state],
+    );
+    return null;
+  }
+
+  if (isCompensation(current.step)) {
+    await client.query(
+      `UPDATE runs SET state = 'Dead-lettered', not_before = NULL WHERE id = $1`,
+      [current.runId],
+    );
+    return null;
+  }
+
+  const compensation = await nextDueCompensation(client, current.runId);
+  if (!compensation) {
+    await client.query(
+      `UPDATE runs SET state = 'Failed', not_before = NULL WHERE id = $1`,
+      [current.runId],
     );
     return null;
   }
 
   await client.query(
-    `UPDATE runs SET state = 'Failed', not_before = NULL WHERE id = $1`,
+    `UPDATE runs
+     SET state = 'Compensating', unwind_reason = 'retries-exhausted', not_before = NULL
+     WHERE id = $1`,
     [current.runId],
   );
+  await client.query(
+    `INSERT INTO attempts (run_id, step, attempt, outcome, started_at, finished_at)
+     VALUES ($1, $2, 1, 'in-flight', clock_timestamp(), NULL)`,
+    [current.runId, compensation],
+  );
+  return {
+    runId: current.runId,
+    step: compensation,
+    attempt: 1,
+    ctx: current.ctx,
+    injection: current.injection,
+  };
+}
+
+async function finishCompensation(
+  client: PoolClient,
+  current: OpenAttempt,
+): Promise<OpenAttempt | null> {
+  const next = await nextDueCompensation(client, current.runId);
+  if (next) {
+    await client.query(
+      `INSERT INTO attempts (run_id, step, attempt, outcome, started_at, finished_at)
+       VALUES ($1, $2, 1, 'in-flight', clock_timestamp(), NULL)`,
+      [current.runId, next],
+    );
+    return {
+      runId: current.runId,
+      step: next,
+      attempt: 1,
+      ctx: current.ctx,
+      injection: current.injection,
+    };
+  }
+
+  const reason = await client.query<{ unwind_reason: string | null }>(
+    `SELECT unwind_reason FROM runs WHERE id = $1`,
+    [current.runId],
+  );
+  const state = reason.rows[0]?.unwind_reason === "cancelled" ? "Cancelled" : "Failed";
+  await client.query(
+    `UPDATE runs SET state = $2, not_before = NULL WHERE id = $1`,
+    [current.runId, state],
+  );
   return null;
+}
+
+async function nextDueCompensation(
+  client: PoolClient,
+  runId: string,
+): Promise<string | null> {
+  const stored = await client.query<{ step: string; outcome: string }>(
+    `SELECT step, outcome FROM attempts WHERE run_id = $1`,
+    [runId],
+  );
+  const completed = new Set(
+    stored.rows.filter((row) => row.outcome === "succeeded").map((row) => row.step),
+  );
+  for (const step of [...orderWorkflow.forward].reverse()) {
+    if (!completed.has(step)) continue;
+    const compensation = orderWorkflow.compensations[step];
+    if (!compensation || completed.has(compensation)) continue;
+    return compensation;
+  }
+  return null;
+}
+
+function isCompensation(step: string): boolean {
+  return Object.values(orderWorkflow.compensations).includes(step);
 }
 
 function fullJitterMs(policy: StepPolicy, attempt: number): number {
