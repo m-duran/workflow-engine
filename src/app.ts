@@ -8,6 +8,7 @@ export type RunningApp = {
   app: Hono;
   stop: () => Promise<void>;
   reset: () => Promise<void>;
+  exclusive: <T>(fn: () => Promise<T>) => Promise<T>;
 };
 
 export async function createApp(databaseUrl: string): Promise<RunningApp> {
@@ -26,5 +27,6 @@ export async function createApp(databaseUrl: string): Promise<RunningApp> {
     async reset() {
       await worker.exclusive(() => resetRuns(pool));
     },
+    exclusive: worker.exclusive,
   };
 }

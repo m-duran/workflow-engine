@@ -15,6 +15,85 @@ type AttemptResult =
   | { outcome: "succeeded"; output: unknown }
   | { outcome: "failed" | "timed-out" };
 
+export type StoredRun = {
+  id: string;
+  workflow: string;
+  input: unknown;
+  state: string;
+  cancel_requested: boolean;
+  unwind_reason: string | null;
+  failure_injection: Injection[];
+  created_at: Date;
+};
+
+const runColumns =
+  "id, workflow, input, state, cancel_requested, unwind_reason, failure_injection, created_at";
+
+const terminalStates = new Set(["Succeeded", "Failed", "Dead-lettered", "Cancelled"]);
+
+export type CancelDecision =
+  | { kind: "missing" }
+  | { kind: "rejected" }
+  | { kind: "ok"; run: StoredRun };
+
+export async function requestCancel(pool: Pool, runId: string): Promise<CancelDecision> {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const found = await client.query<StoredRun>(
+      `SELECT ${runColumns} FROM runs WHERE id = $1 FOR UPDATE`,
+      [runId],
+    );
+    const run = found.rows[0];
+    if (!run) {
+      await client.query("COMMIT");
+      return { kind: "missing" };
+    }
+    if (terminalStates.has(run.state)) {
+      await client.query("COMMIT");
+      return { kind: "rejected" };
+    }
+    if (run.state === "Compensating") {
+      await client.query("COMMIT");
+      return { kind: "ok", run };
+    }
+    if (run.state === "Accepted") {
+      const updated = await client.query<StoredRun>(
+        `UPDATE runs
+         SET state = 'Cancelled',
+             cancel_requested = false,
+             unwind_reason = NULL,
+             not_before = NULL
+         WHERE id = $1
+         RETURNING ${runColumns}`,
+        [runId],
+      );
+      await client.query("COMMIT");
+      const cancelled = updated.rows[0];
+      if (!cancelled) throw new Error(`cancel did not return run ${runId}`);
+      return { kind: "ok", run: cancelled };
+    }
+
+    const updated = await client.query<StoredRun>(
+      `UPDATE runs
+       SET cancel_requested = true,
+           not_before = CASE WHEN state = 'Waiting' THEN NULL ELSE not_before END
+       WHERE id = $1
+       RETURNING ${runColumns}`,
+      [runId],
+    );
+    await client.query("COMMIT");
+    const flagged = updated.rows[0];
+    if (!flagged) throw new Error(`cancel did not return run ${runId}`);
+    return { kind: "ok", run: flagged };
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
 export type Worker = {
   stop: () => Promise<void>;
   exclusive: <T>(fn: () => Promise<T>) => Promise<T>;
@@ -87,8 +166,9 @@ async function claimWork(pool: Pool): Promise<OpenAttempt | null> {
       input: unknown;
       state: string;
       failure_injection: Injection[];
+      cancel_requested: boolean;
     }>(
-      `SELECT id, input, state, failure_injection
+      `SELECT id, input, state, failure_injection, cancel_requested
        FROM runs
        WHERE state IN ('Accepted', 'Waiting', 'Compensating')
          AND (not_before IS NULL OR not_before <= clock_timestamp())
@@ -104,6 +184,16 @@ async function claimWork(pool: Pool): Promise<OpenAttempt | null> {
     if (!run) {
       await client.query("COMMIT");
       return null;
+    }
+
+    if (run.state === "Waiting" && run.cancel_requested) {
+      const opened = await unwindCancel(client, {
+        id: run.id,
+        input: run.input,
+        failure_injection: run.failure_injection,
+      });
+      await client.query("COMMIT");
+      return opened;
     }
 
     const next =
@@ -186,10 +276,15 @@ async function recordOutcome(
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
+    const locked = await client.query<{ cancel_requested: boolean }>(
+      `SELECT cancel_requested FROM runs WHERE id = $1 FOR UPDATE`,
+      [current.runId],
+    );
+    const cancelRequested = locked.rows[0]?.cancel_requested ?? false;
     const next =
       result.outcome === "succeeded"
-        ? await recordSuccess(client, current, result.output)
-        : await recordFailure(client, current, result.outcome);
+        ? await recordSuccess(client, current, result.output, cancelRequested)
+        : await recordFailure(client, current, result.outcome, cancelRequested);
     await client.query("COMMIT");
     return next;
   } catch (error) {
@@ -204,6 +299,7 @@ async function recordSuccess(
   client: PoolClient,
   current: OpenAttempt,
   output: unknown,
+  cancelRequested: boolean,
 ): Promise<OpenAttempt | null> {
   await client.query(
     `UPDATE attempts
@@ -215,6 +311,8 @@ async function recordSuccess(
   if (isCompensation(current.step)) {
     return finishCompensation(client, current);
   }
+
+  if (cancelRequested) return unwindCancel(client, runFrom(current));
 
   const position = orderWorkflow.forward.indexOf(current.step);
   const next = orderWorkflow.forward[position + 1];
@@ -247,6 +345,7 @@ async function recordFailure(
   client: PoolClient,
   current: OpenAttempt,
   outcome: "failed" | "timed-out",
+  cancelRequested: boolean,
 ): Promise<OpenAttempt | null> {
   await client.query(
     `UPDATE attempts
@@ -254,6 +353,10 @@ async function recordFailure(
      WHERE run_id = $1 AND step = $2 AND attempt = $3 AND outcome = 'in-flight'`,
     [current.runId, current.step, current.attempt, outcome],
   );
+
+  if (!isCompensation(current.step) && cancelRequested) {
+    return unwindCancel(client, runFrom(current));
+  }
 
   const policy = steps[current.step]?.policy;
   if (!policy) throw new Error(`no step registered for ${current.step}`);
@@ -307,6 +410,53 @@ async function recordFailure(
     attempt: 1,
     ctx: current.ctx,
     injection: current.injection,
+  };
+}
+
+function runFrom(current: OpenAttempt): {
+  id: string;
+  input: unknown;
+  failure_injection: Injection[];
+} {
+  return {
+    id: current.runId,
+    input: current.ctx.input,
+    failure_injection: current.injection,
+  };
+}
+
+async function unwindCancel(
+  client: PoolClient,
+  run: { id: string; input: unknown; failure_injection: Injection[] },
+): Promise<OpenAttempt | null> {
+  await client.query(
+    `UPDATE runs SET cancel_requested = false, not_before = NULL WHERE id = $1`,
+    [run.id],
+  );
+  const compensation = await nextDueCompensation(client, run.id);
+  if (!compensation) {
+    await client.query(
+      `UPDATE runs SET state = 'Cancelled', unwind_reason = NULL WHERE id = $1`,
+      [run.id],
+    );
+    return null;
+  }
+
+  await client.query(
+    `UPDATE runs SET state = 'Compensating', unwind_reason = 'cancelled' WHERE id = $1`,
+    [run.id],
+  );
+  await client.query(
+    `INSERT INTO attempts (run_id, step, attempt, outcome, started_at, finished_at)
+     VALUES ($1, $2, 1, 'in-flight', clock_timestamp(), NULL)`,
+    [run.id, compensation],
+  );
+  return {
+    runId: run.id,
+    step: compensation,
+    attempt: 1,
+    ctx: { input: run.input, outputs: {} },
+    injection: run.failure_injection,
   };
 }
 

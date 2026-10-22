@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import type { Pool } from "pg";
 import { z } from "zod";
 import { canonicalJson } from "./canonical";
+import { requestCancel } from "./engine";
 import { orderWorkflow } from "./order";
 
 const stepName = z.enum([
@@ -118,12 +119,17 @@ export function createRouter(pool: Pool): Hono {
   });
 
   app.post("/runs/:runId/cancel", async (c) => {
-    const run = await findRun(pool, c.req.param("runId"));
-    if (!run) return notFound(c);
-    return c.json(
-      { error: "cancel-rejected", message: "Cancel was rejected" },
-      409,
-    );
+    const runId = c.req.param("runId");
+    if (!uuidText.safeParse(runId).success) return notFound(c);
+    const decision = await requestCancel(pool, runId);
+    if (decision.kind === "missing") return notFound(c);
+    if (decision.kind === "rejected") {
+      return c.json(
+        { error: "cancel-rejected", message: "Cancel was rejected" },
+        409,
+      );
+    }
+    return c.json(toRun(decision.run), 200);
   });
 
   app.get("/runs/:runId", async (c) => {
