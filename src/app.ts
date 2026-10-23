@@ -1,6 +1,6 @@
 import type { Hono } from "hono";
 import { createPool, migrate, resetRuns } from "./db";
-import { startWorker } from "./engine";
+import { recoverInFlight, startWorker } from "./engine";
 import { createRouter } from "./http";
 import { assertRegistration } from "./order";
 
@@ -15,6 +15,7 @@ export async function createApp(databaseUrl: string): Promise<RunningApp> {
   assertRegistration();
   const pool = createPool(databaseUrl);
   await migrate(pool);
+  await recoverInFlight(pool);
   const worker = startWorker(pool);
   const app = createRouter(pool);
 

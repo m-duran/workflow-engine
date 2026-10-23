@@ -99,6 +99,35 @@ export type Worker = {
   exclusive: <T>(fn: () => Promise<T>) => Promise<T>;
 };
 
+export async function recoverInFlight(pool: Pool): Promise<void> {
+  const open = await pool.query<{ run_id: string; step: string; attempt: number }>(
+    `SELECT run_id, step, attempt
+     FROM attempts
+     WHERE outcome = 'in-flight'
+     ORDER BY started_at`,
+  );
+  for (const row of open.rows) {
+    const stored = await pool.query<{ input: unknown; failure_injection: Injection[] }>(
+      `SELECT input, failure_injection FROM runs WHERE id = $1`,
+      [row.run_id],
+    );
+    const run = stored.rows[0];
+    if (!run) continue;
+    let current: OpenAttempt | null = {
+      runId: row.run_id,
+      step: row.step,
+      attempt: row.attempt,
+      ctx: { input: run.input, outputs: {} },
+      injection: run.failure_injection,
+    };
+    current = await recordOutcome(pool, current, { outcome: "failed" });
+    while (current) {
+      const result = await invoke(current);
+      current = await recordOutcome(pool, current, result);
+    }
+  }
+}
+
 export function startWorker(pool: Pool): Worker {
   let stopped = false;
   let tail: Promise<void> = Promise.resolve();
