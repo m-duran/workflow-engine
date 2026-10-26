@@ -1,8 +1,10 @@
+import { ROOT_CONTEXT, context, createContextKey, propagation, trace } from "@opentelemetry/api";
 import { Hono } from "hono";
 import type { Pool } from "pg";
 import { z } from "zod";
 import { canonicalJson } from "./canonical";
 import { requestCancel } from "./engine";
+import { logCommit, logHttp } from "./observe";
 import { orderWorkflow } from "./order";
 
 const stepName = z.enum([
@@ -63,8 +65,46 @@ type AttemptRow = {
   finished_at: Date | null;
 };
 
+type TraceFields = {
+  runId?: string;
+  workflow?: string;
+};
+
+const tracer = trace.getTracer("workflow-engine");
+const traceFieldsKey = createContextKey("workflow trace fields");
+
 export function createRouter(pool: Pool): Hono {
   const app = new Hono();
+
+  app.use("*", async (c, next) => {
+    const method = c.req.method;
+    const route = routePattern(method, c.req.path);
+    const carrier: Record<string, string> = {};
+    const traceparent = c.req.header("traceparent");
+    const tracestate = c.req.header("tracestate");
+    if (traceparent) carrier.traceparent = traceparent;
+    if (tracestate) carrier.tracestate = tracestate;
+    const parent = propagation.extract(ROOT_CONTEXT, carrier);
+    const traceFields: TraceFields = {};
+    const pathRunId = runIdFromPath(method, c.req.path);
+    if (pathRunId !== undefined) traceFields.runId = pathRunId;
+    const withFields = parent.setValue(traceFieldsKey, traceFields);
+    const span = tracer.startSpan(`${method} ${route}`, undefined, withFields);
+    try {
+      await context.with(trace.setSpan(withFields, span), () => next());
+    } finally {
+      if (traceFields.runId !== undefined) span.setAttribute("runId", traceFields.runId);
+      if (traceFields.workflow !== undefined) span.setAttribute("workflow", traceFields.workflow);
+      span.end();
+      logHttp({
+        runId: traceFields.runId,
+        workflow: traceFields.workflow,
+        method,
+        route,
+        statusCode: c.res.status,
+      });
+    }
+  });
 
   app.post("/runs", async (c) => {
     const key = c.req.header("idempotency-key");
@@ -101,6 +141,9 @@ export function createRouter(pool: Pool): Hono {
         409,
       );
     }
+    const traced = currentTrace();
+    traced.runId = started.run.id;
+    traced.workflow = started.run.workflow;
     return c.json(originalStart(started.run), 201);
   });
 
@@ -123,6 +166,7 @@ export function createRouter(pool: Pool): Hono {
     if (!uuidText.safeParse(runId).success) return notFound(c);
     const decision = await requestCancel(pool, runId);
     if (decision.kind === "missing") return notFound(c);
+    currentTrace().workflow = decision.run.workflow;
     if (decision.kind === "rejected") {
       return c.json(
         { error: "cancel-rejected", message: "Cancel was rejected" },
@@ -136,6 +180,7 @@ export function createRouter(pool: Pool): Hono {
     const runId = c.req.param("runId");
     const run = await findRun(pool, runId);
     if (!run) return notFound(c);
+    currentTrace().workflow = run.workflow;
 
     const attempts = await pool.query<AttemptRow>(
       `SELECT step, attempt, outcome, started_at, finished_at
@@ -157,6 +202,14 @@ export function createRouter(pool: Pool): Hono {
   });
 
   return app;
+}
+
+function currentTrace(): TraceFields {
+  const value = context.active().getValue(traceFieldsKey);
+  if (typeof value !== "object" || value === null) {
+    throw new Error("HTTP trace fields are not active");
+  }
+  return value as TraceFields;
 }
 
 type StartResult =
@@ -185,6 +238,7 @@ async function startRun(
     );
     const run = inserted.rows[0];
     if (!run) throw new Error("insert did not return a run");
+    logCommit({ runId: run.id, workflow: run.workflow, state: run.state });
     return { conflict: false, run };
   } catch (error) {
     if (!isUniqueViolation(error)) throw error;
@@ -280,4 +334,27 @@ function readLimit(raw: string | undefined): number | Response {
 
 function invalid(c: { json: (body: unknown, status: 400) => Response }, message: string) {
   return c.json({ error: "invalid-request", message }, 400);
+}
+
+function routePattern(method: string, path: string): string {
+  if (path === "/runs") return "/runs";
+  if (method === "GET" && /^\/runs\/[^/]+$/.test(path)) return "/runs/{runId}";
+  if (method === "POST" && /^\/runs\/[^/]+\/cancel$/.test(path)) return "/runs/{runId}/cancel";
+  return path;
+}
+
+function runIdFromPath(method: string, path: string): string | undefined {
+  const pattern =
+    method === "GET"
+      ? /^\/runs\/([^/]+)$/
+      : method === "POST"
+        ? /^\/runs\/([^/]+)\/cancel$/
+        : undefined;
+  const id = pattern?.exec(path)?.[1];
+  if (id === undefined) return undefined;
+  try {
+    return decodeURIComponent(id);
+  } catch {
+    return id;
+  }
 }

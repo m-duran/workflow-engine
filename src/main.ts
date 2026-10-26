@@ -1,5 +1,8 @@
 import { serve } from "@hono/node-server";
 import { createApp } from "./app";
+import { startTracing } from "./observe";
+
+startTracing();
 
 const databaseUrl =
   process.env.DATABASE_URL ??
