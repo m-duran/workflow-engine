@@ -1,0 +1,398 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Prototype: scenario controls on the Timeline</title>
+<!--
+  PROTOTYPE. Throwaway. Not a production route.
+  Three placements of the scenario buttons, cancel, and the error message
+  on the fixed Timeline. Switchable via ?variant=.
+  No existing page: the Next app is not built. Sub-shape B, one HTML file.
+  A Command bar — B On the run — C Rail actions — D Bar and nearby cancel
+-->
+<style>
+  :root { color-scheme: light; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 14px/1.4 system-ui, sans-serif; color: #1a1a1a; background: #f4f4f1; }
+  button { font: inherit; cursor: pointer; }
+  .switcher {
+    position: fixed; z-index: 10; left: 50%; bottom: 16px; transform: translateX(-50%);
+    display: flex; gap: 8px; align-items: center;
+    background: #111; color: #fff; border-radius: 999px; padding: 6px 8px;
+    box-shadow: 0 8px 24px rgba(0,0,0,.25);
+  }
+  .switcher button {
+    background: transparent; color: #fff; border: 0; width: 32px; height: 32px; border-radius: 999px;
+  }
+  .switcher button:hover { background: #333; }
+  .switcher .label { min-width: 14rem; text-align: center; font-size: 13px; }
+  .page { padding: 20px 20px 80px; }
+  .mono { font-family: ui-monospace, monospace; font-size: 12px; }
+  .timeline { display: grid; grid-template-columns: 240px 1fr; gap: 20px; align-items: start; }
+  .rail { display: flex; flex-direction: column; gap: 4px; }
+  .rail-item {
+    text-align: left; border: 0; background: transparent; padding: 8px;
+    border-left: 3px solid transparent; color: inherit;
+  }
+  .rail-item[aria-current="true"] { border-left-color: #111; background: #fff; }
+  .story h1 { font-size: 22px; margin: 0; }
+  .meta { color: #444; margin: 8px 0 20px; }
+  .beat { display: grid; grid-template-columns: 16px 1fr; gap: 12px; }
+  .beat i { width: 10px; height: 10px; border-radius: 50%; background: #111; display: block; margin-top: 4px; }
+  .beat + .beat { margin-top: 14px; }
+  .beat p { margin: 0; }
+  .message {
+    background: #fff; border: 1px solid #e0b4a0; color: #6b2d12;
+    padding: 10px 12px; margin: 0;
+  }
+  .message:empty { display: none; }
+  .scenario, .cancel {
+    background: #fff; border: 1px solid #ccc; padding: 8px 10px; text-align: left;
+  }
+  .cancel { border-color: #111; }
+  .command {
+    display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
+    background: #fff; padding: 12px; margin: -20px -20px 16px; border-bottom: 1px solid #ddd;
+  }
+  .command .scenario { flex: 1 1 140px; }
+  .command .message { flex: 1 0 100%; }
+  .on-run .head { display: flex; justify-content: space-between; gap: 16px; align-items: flex-start; }
+  .nearby .head { display: flex; justify-content: flex-start; gap: 12px; align-items: center; }
+  .nearby .message { margin: 8px 0 0; }
+  .on-run .scenarios { display: flex; flex-direction: column; gap: 8px; margin-bottom: 16px; }
+  .rail-actions { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; }
+  .rail-card { display: flex; flex-direction: column; gap: 6px; background: #fff; padding: 8px; }
+  .rail-card .rail-item { padding: 0; border: 0; background: transparent; }
+</style>
+</head>
+<body>
+<div class="page" id="page"></div>
+<div class="switcher">
+  <button type="button" id="prev" aria-label="Previous variant">←</button>
+  <div class="label" id="label"></div>
+  <button type="button" id="next" aria-label="Next variant">→</button>
+</div>
+<script>
+const VARIANTS = [
+  { key: "A", name: "Command bar" },
+  { key: "B", name: "On the run" },
+  { key: "C", name: "Rail actions" },
+  { key: "D", name: "Bar and nearby cancel" }
+];
+
+const SCENARIOS = [
+  "Succeed",
+  "Exhaust inventory",
+  "Cancel during inventory",
+  "Dead-letter compensation"
+];
+
+const TERMINAL = new Set(["Succeeded", "Failed", "Dead-lettered", "Cancelled"]);
+
+function attempt(step, n, outcome, startedAt, finishedAt) {
+  return { step, attempt: n, outcome, startedAt, finishedAt };
+}
+
+const runs = [
+  {
+    id: "a1c0e4b2-7d11-4a6e-9c31-0e5b8f2a1d44",
+    state: "Accepted",
+    cancelRequested: false,
+    unwindReason: null,
+    failureInjection: [],
+    input: {},
+    attempts: []
+  },
+  {
+    id: "b2d1f5c3-8e22-4b7f-0d42-1f6c9a3b2e55",
+    state: "Running",
+    cancelRequested: false,
+    unwindReason: null,
+    failureInjection: [{ step: "validate-inventory", mode: "timeout" }],
+    input: {},
+    attempts: [attempt("validate-inventory", 1, "in-flight", "2026-10-15T21:50:01Z", null)]
+  },
+  {
+    id: "d4f317e5-0a44-4d91-2f64-3b8e1c5d4077",
+    state: "Waiting",
+    cancelRequested: false,
+    unwindReason: null,
+    failureInjection: [{ step: "send-notification", mode: "fail" }],
+    input: {},
+    attempts: [
+      attempt("validate-inventory", 1, "succeeded", "2026-10-15T21:30:01Z", "2026-10-15T21:30:01Z"),
+      attempt("take-payment", 1, "succeeded", "2026-10-15T21:30:02Z", "2026-10-15T21:30:03Z"),
+      attempt("send-notification", 1, "failed", "2026-10-15T21:30:03Z", "2026-10-15T21:30:03Z")
+    ]
+  },
+  {
+    id: "e50428f6-1b55-4ea2-3075-4c9f2d6e5188",
+    state: "Compensating",
+    cancelRequested: false,
+    unwindReason: "retries-exhausted",
+    failureInjection: [
+      { step: "send-notification", mode: "fail" },
+      { step: "payment-compensation", mode: "timeout" }
+    ],
+    input: {},
+    attempts: [
+      attempt("validate-inventory", 1, "succeeded", "2026-10-15T21:10:01Z", "2026-10-15T21:10:01Z"),
+      attempt("take-payment", 1, "succeeded", "2026-10-15T21:10:02Z", "2026-10-15T21:10:03Z"),
+      attempt("send-notification", 1, "failed", "2026-10-15T21:10:04Z", "2026-10-15T21:10:04Z"),
+      attempt("payment-compensation", 1, "in-flight", "2026-10-15T21:10:19Z", null)
+    ]
+  },
+  {
+    id: "f61539a7-2c66-4fb3-4186-5d0a3e7f6299",
+    state: "Succeeded",
+    cancelRequested: false,
+    unwindReason: null,
+    failureInjection: [],
+    input: {},
+    attempts: [
+      attempt("validate-inventory", 1, "succeeded", "2026-10-15T20:00:01Z", "2026-10-15T20:00:01Z"),
+      attempt("take-payment", 1, "succeeded", "2026-10-15T20:00:02Z", "2026-10-15T20:00:03Z"),
+      attempt("send-notification", 1, "succeeded", "2026-10-15T20:00:03Z", "2026-10-15T20:00:04Z")
+    ]
+  },
+  {
+    id: "07164ab8-3d77-40c4-5297-6e1b4f8070aa",
+    state: "Cancelled",
+    cancelRequested: false,
+    unwindReason: "cancelled",
+    failureInjection: [{ step: "validate-inventory", mode: "timeout" }],
+    input: {},
+    attempts: [attempt("validate-inventory", 1, "timed-out", "2026-10-15T19:00:01Z", "2026-10-15T19:00:02Z")]
+  },
+  {
+    id: "18275bc9-4e88-41d5-63a8-7f2c508191bb",
+    state: "Failed",
+    cancelRequested: false,
+    unwindReason: "retries-exhausted",
+    failureInjection: [{ step: "validate-inventory", mode: "timeout" }],
+    input: {},
+    attempts: [
+      attempt("validate-inventory", 1, "timed-out", "2026-10-15T18:00:01Z", "2026-10-15T18:00:02Z"),
+      attempt("validate-inventory", 2, "timed-out", "2026-10-15T18:00:03Z", "2026-10-15T18:00:04Z"),
+      attempt("validate-inventory", 3, "timed-out", "2026-10-15T18:00:06Z", "2026-10-15T18:00:07Z")
+    ]
+  },
+  {
+    id: "29386cd0-5f99-42e6-74b9-803d6192a2cc",
+    state: "Dead-lettered",
+    cancelRequested: false,
+    unwindReason: "retries-exhausted",
+    failureInjection: [
+      { step: "send-notification", mode: "fail" },
+      { step: "payment-compensation", mode: "timeout" }
+    ],
+    input: {},
+    attempts: [
+      attempt("validate-inventory", 1, "succeeded", "2026-10-15T17:00:01Z", "2026-10-15T17:00:01Z"),
+      attempt("take-payment", 1, "succeeded", "2026-10-15T17:00:02Z", "2026-10-15T17:00:03Z"),
+      attempt("send-notification", 1, "failed", "2026-10-15T17:00:03Z", "2026-10-15T17:00:03Z"),
+      attempt("send-notification", 2, "failed", "2026-10-15T17:00:04Z", "2026-10-15T17:00:04Z"),
+      attempt("send-notification", 3, "failed", "2026-10-15T17:00:05Z", "2026-10-15T17:00:05Z"),
+      attempt("send-notification", 4, "failed", "2026-10-15T17:00:06Z", "2026-10-15T17:00:06Z"),
+      attempt("send-notification", 5, "failed", "2026-10-15T17:00:08Z", "2026-10-15T17:00:08Z"),
+      attempt("payment-compensation", 1, "timed-out", "2026-10-15T17:00:08Z", "2026-10-15T17:00:11Z"),
+      attempt("payment-compensation", 2, "timed-out", "2026-10-15T17:00:12Z", "2026-10-15T17:00:15Z"),
+      attempt("payment-compensation", 3, "timed-out", "2026-10-15T17:00:16Z", "2026-10-15T17:00:19Z"),
+      attempt("payment-compensation", 4, "timed-out", "2026-10-15T17:00:20Z", "2026-10-15T17:00:23Z"),
+      attempt("payment-compensation", 5, "timed-out", "2026-10-15T17:00:24Z", "2026-10-15T17:00:27Z")
+    ]
+  }
+];
+
+let selectedId = runs[7].id;
+let message = "This run can no longer be cancelled.";
+
+function variantKey() {
+  const key = new URLSearchParams(location.search).get("variant") || "A";
+  return VARIANTS.some((item) => item.key === key) ? key : "A";
+}
+
+function setVariant(key) {
+  const url = new URL(location.href);
+  url.searchParams.set("variant", key);
+  history.replaceState(null, "", url);
+  render();
+}
+
+function cycle(step) {
+  const index = VARIANTS.findIndex((item) => item.key === variantKey());
+  setVariant(VARIANTS[(index + step + VARIANTS.length) % VARIANTS.length].key);
+}
+
+function selected() {
+  return runs.find((run) => run.id === selectedId) || runs[0];
+}
+
+function shortId(id) {
+  return id.slice(0, 8);
+}
+
+function flags(run) {
+  const parts = [];
+  if (run.cancelRequested) parts.push("cancel requested");
+  if (run.unwindReason) parts.push(run.unwindReason);
+  if (run.failureInjection.length) {
+    parts.push(run.failureInjection.map((item) => `${item.step} ${item.mode}`).join(", "));
+  }
+  parts.push(`input ${JSON.stringify(run.input)}`);
+  return parts.join(" · ");
+}
+
+function scenarioButtons() {
+  return SCENARIOS.map((name) =>
+    `<button type="button" class="scenario" data-action="scenario">${name}</button>`
+  ).join("");
+}
+
+function cancelButton() {
+  return `<button type="button" class="cancel" data-action="cancel">Cancel</button>`;
+}
+
+function messageBlock() {
+  return `<p class="message">${message}</p>`;
+}
+
+function railButtons() {
+  const run = selected();
+  return runs.map((item) =>
+    `<button type="button" class="rail-item" data-id="${item.id}" ${item.id === run.id ? 'aria-current="true"' : ""}>${item.state}<br><span class="mono">${shortId(item.id)}</span></button>`
+  ).join("");
+}
+
+function beats(run) {
+  if (!run.attempts.length) return `<p>No attempts yet.</p>`;
+  return run.attempts.map((item) =>
+    `<div class="beat"><i></i><p><strong>${item.step}</strong> attempt ${item.attempt} · ${item.outcome}<br><span class="mono">${item.startedAt}${item.finishedAt ? " → " + item.finishedAt : ""}</span></p></div>`
+  ).join("");
+}
+
+function storyBody(run) {
+  return `<h1>${run.state}</h1><p class="meta mono">${run.id}<br>${flags(run)}</p>${beats(run)}`;
+}
+
+function renderCommandBar() {
+  return `
+    <div class="command">
+      ${scenarioButtons()}
+      ${cancelButton()}
+      ${messageBlock()}
+    </div>
+    <div class="timeline">
+      <nav class="rail">${railButtons()}</nav>
+      <article class="story">${storyBody(selected())}</article>
+    </div>
+  `;
+}
+
+function renderOnTheRun() {
+  const run = selected();
+  return `
+    <div class="timeline on-run">
+      <nav class="rail">${railButtons()}</nav>
+      <article class="story">
+        <div class="head">
+          <h1>${run.state}</h1>
+          ${cancelButton()}
+        </div>
+        ${messageBlock()}
+        <p class="meta mono">${run.id}<br>${flags(run)}</p>
+        <div class="scenarios">${scenarioButtons()}</div>
+        ${beats(run)}
+      </article>
+    </div>
+  `;
+}
+
+function renderBarAndNearbyCancel() {
+  const run = selected();
+  return `
+    <div class="command">${scenarioButtons()}</div>
+    <div class="timeline nearby">
+      <nav class="rail">${railButtons()}</nav>
+      <article class="story">
+        <div class="head">
+          <h1>${run.state}</h1>
+          ${cancelButton()}
+        </div>
+        ${messageBlock()}
+        <p class="meta mono">${run.id}<br>${flags(run)}</p>
+        ${beats(run)}
+      </article>
+    </div>
+  `;
+}
+
+function renderRailActions() {
+  const run = selected();
+  const rail = runs.map((item) => {
+    const current = item.id === run.id;
+    return `
+      <div class="${current ? "rail-card" : ""}">
+        <button type="button" class="rail-item" data-id="${item.id}" ${current ? 'aria-current="true"' : ""}>${item.state}<br><span class="mono">${shortId(item.id)}</span></button>
+        ${current ? cancelButton() : ""}
+      </div>
+    `;
+  }).join("");
+  return `
+    <div class="timeline">
+      <div>
+        <nav class="rail">${rail}</nav>
+        <div class="rail-actions">${scenarioButtons()}</div>
+      </div>
+      <article class="story">
+        ${messageBlock()}
+        ${storyBody(run)}
+      </article>
+    </div>
+  `;
+}
+
+function render() {
+  const current = VARIANTS.find((item) => item.key === variantKey());
+  document.getElementById("label").textContent = `${current.key} (${current.name})`;
+  const page = document.getElementById("page");
+  if (current.key === "A") page.innerHTML = renderCommandBar();
+  else if (current.key === "B") page.innerHTML = renderOnTheRun();
+  else if (current.key === "C") page.innerHTML = renderRailActions();
+  else page.innerHTML = renderBarAndNearbyCancel();
+}
+
+document.getElementById("page").addEventListener("click", (event) => {
+  const action = event.target.closest("[data-action]");
+  if (action) {
+    if (action.dataset.action === "scenario") message = "";
+    if (action.dataset.action === "cancel") {
+      const run = selected();
+      if (TERMINAL.has(run.state)) message = "This run can no longer be cancelled.";
+      else {
+        message = "";
+        run.cancelRequested = true;
+      }
+    }
+    render();
+    return;
+  }
+  const row = event.target.closest("[data-id]");
+  if (!row) return;
+  selectedId = row.dataset.id;
+  render();
+});
+
+document.getElementById("prev").addEventListener("click", () => cycle(-1));
+document.getElementById("next").addEventListener("click", () => cycle(1));
+document.addEventListener("keydown", (event) => {
+  const tag = document.activeElement && document.activeElement.tagName;
+  if (tag === "INPUT" || tag === "TEXTAREA" || (document.activeElement && document.activeElement.isContentEditable)) return;
+  if (event.key === "ArrowLeft") cycle(-1);
+  if (event.key === "ArrowRight") cycle(1);
+});
+
+render();
+</script>
+</body>
+</html>
